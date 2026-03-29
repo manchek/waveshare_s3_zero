@@ -5,5 +5,6 @@ idf_component_register(
 		"."
 	REQUIRES
 		"libdow"
+		"sht40"
 		"esp_timer"
 )

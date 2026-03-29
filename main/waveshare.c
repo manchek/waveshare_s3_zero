@@ -1,20 +1,40 @@
 #include <stdio.h>
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include "libdow.h"
+#include "sht40.h"
+
+#define ENABLE_DOW
 
 static const char *LOGTAG __attribute__((unused)) = "WSDEMO";
 
 i2c_master_bus_handle_t bus_handle;
-i2c_master_dev_handle_t dev_handle;
+
+sht40_sensor_t sensor1;
+
+void monitor_heap() {
+    multi_heap_info_t heap_info;
+    heap_caps_get_info(&heap_info, MALLOC_CAP_DEFAULT);
+    ESP_LOGI(LOGTAG,
+			"HeapInfo aby %d fby %d mfby %d abk %d fbk %d tbk %d lfbk %d",
+			heap_info.total_allocated_bytes,
+			heap_info.total_free_bytes,
+			heap_info.minimum_free_bytes,
+			heap_info.allocated_blocks,
+			heap_info.free_blocks,
+			heap_info.total_blocks,
+			heap_info.largest_free_block
+			);
+}
 
 esp_err_t
-sht40_init( int sda, int scl )
+initialize_i2c( int sda, int scl )
 {
 	i2c_master_bus_config_t bus_config = {
 		.i2c_port = I2C_NUM_0,
@@ -25,52 +45,29 @@ sht40_init( int sda, int scl )
 		.flags.enable_internal_pullup = true,
 	};
 	ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &bus_handle));
-
-	i2c_device_config_t dev_config = {
-		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-		.device_address = 0x44,
-		.scl_speed_hz = 100000,
-	};
-	ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_config, &dev_handle));
-
-	return ESP_OK;
-}
-
-esp_err_t
-sht40_read_id()
-{
-	uint8_t wbuf[2];
-	uint8_t buf[6] = {0};
-
-	wbuf[0] = 0x89;
-	ESP_LOGI(LOGTAG, "read device id");
-	esp_err_t rc = i2c_master_transmit(dev_handle, wbuf, 1, pdMS_TO_TICKS(500));
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "i2c mw failed: %s", esp_err_to_name(rc));
-		return rc;
-	}
-	vTaskDelay(pdMS_TO_TICKS(10));
-	rc = i2c_master_receive(dev_handle, buf, 6, pdMS_TO_TICKS(500));
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "i2c mr failed: %s", esp_err_to_name(rc));
-		return rc;
-	}
-	ESP_LOGI(LOGTAG, "SHT40 %02x:%02x:%02x:%02x:%02x:%02x", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
 	return ESP_OK;
 }
 
 void app_main(void)
 {
+	int last_heap = 0;
 	ESP_LOGI(LOGTAG, "Hi there");
-#if 0
+#ifdef ENABLE_DOW
 	dow_bus_t bus;
 	dowBusInit(&bus, GPIO_NUM_6, -1);
 #endif
-	sht40_init(4, 5);
+	initialize_i2c(4, 5);
+	sht40_init(&bus_handle, 0x44, &sensor1);
+	sht40_id_string_t id_string;
+	sht40_get_id(&sensor1, id_string);
+	ESP_LOGI(LOGTAG, "SHT40 sensor %s", id_string);
 	for (; ; ) {
 		ESP_LOGI(LOGTAG, "Loop");
-		sht40_read_id(4, 5);
-#if 0
+		float temp, rh;
+		if (sht40_convert(&sensor1, &temp, &rh)) {
+			ESP_LOGI(LOGTAG, "Temp %f RH %f", (double)temp, (double)rh);
+		}
+#ifdef ENABLE_DOW
 		dow_rom_t rom;
 		dow_rom_search_t srch;
 		dowRomSearchClear(&srch);
@@ -87,7 +84,12 @@ void app_main(void)
 				ESP_LOGI(LOGTAG, "ROM %s Temperature read failed", q);
 		}
 #endif
-		vTaskDelay(pdMS_TO_TICKS(1000));
+		vTaskDelay(pdMS_TO_TICKS(5000));
+		int now = esp_timer_get_time() / 1000000;
+		if (now - last_heap >= 60) {
+			last_heap = now;
+			monitor_heap();
+		}
 	}
 }
 
