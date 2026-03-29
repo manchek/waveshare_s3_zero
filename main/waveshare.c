@@ -2,7 +2,7 @@
 
 #include <esp_log.h>
 #include <driver/gpio.h>
-#include <driver/i2c.h>
+#include <driver/i2c_master.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -10,26 +10,29 @@
 
 static const char *LOGTAG __attribute__((unused)) = "WSDEMO";
 
+i2c_master_bus_handle_t bus_handle;
+i2c_master_dev_handle_t dev_handle;
+
 esp_err_t
 sht40_init( int sda, int scl )
 {
-	i2c_config_t i2cc = {0};
-	i2cc.mode = I2C_MODE_MASTER;
-	i2cc.sda_io_num = sda;
-	i2cc.scl_io_num = scl;
-	i2cc.master.clk_speed = 100000;
+	i2c_master_bus_config_t bus_config = {
+		.i2c_port = I2C_NUM_0,
+		.sda_io_num = sda,
+		.scl_io_num = scl,
+		.clk_source = I2C_CLK_SRC_DEFAULT,
+		.glitch_ignore_cnt = 7,
+		.flags.enable_internal_pullup = true,
+	};
+	ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &bus_handle));
 
-	esp_err_t rc = i2c_param_config(I2C_NUM_0, &i2cc);
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "i2c config failed: %s", esp_err_to_name(rc));
-		return rc;
-	}
+	i2c_device_config_t dev_config = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = 0x44,
+		.scl_speed_hz = 100000,
+	};
+	ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_config, &dev_handle));
 
-	rc = i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "i2c driver install failed: %s", esp_err_to_name(rc));
-		return rc;
-	}
 	return ESP_OK;
 }
 
@@ -41,13 +44,13 @@ sht40_read_id()
 
 	wbuf[0] = 0x89;
 	ESP_LOGI(LOGTAG, "read device id");
-	esp_err_t rc = i2c_master_write_to_device(I2C_NUM_0, 0x44, wbuf, 1, pdMS_TO_TICKS(500));
+	esp_err_t rc = i2c_master_transmit(dev_handle, wbuf, 1, pdMS_TO_TICKS(500));
 	if (rc != ESP_OK) {
 		ESP_LOGE(LOGTAG, "i2c mw failed: %s", esp_err_to_name(rc));
 		return rc;
 	}
 	vTaskDelay(pdMS_TO_TICKS(10));
-	rc = i2c_master_read_from_device(I2C_NUM_0, 0x44, buf, 6, pdMS_TO_TICKS(500));
+	rc = i2c_master_receive(dev_handle, buf, 6, pdMS_TO_TICKS(500));
 	if (rc != ESP_OK) {
 		ESP_LOGE(LOGTAG, "i2c mr failed: %s", esp_err_to_name(rc));
 		return rc;
