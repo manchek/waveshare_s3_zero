@@ -12,6 +12,7 @@
 
 #define ENABLE_DOW
 #define ENABLE_SHT40
+//#define ENABLE_SI7021
 
 static const char *LOGTAG __attribute__((unused)) = "WSDEMO";
 
@@ -48,6 +49,8 @@ initialize_i2c( int sda, int scl )
 	ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &bus_handle));
 	return ESP_OK;
 }
+
+#ifdef ENABLE_SI7021
 
 #define CRCPOLY 0x31
 
@@ -155,6 +158,7 @@ si7021_check( si7021_t *dev )
 			buf[0], buf[1], buf[2]);
 */
 }
+#endif /*ENABLE_SI7021*/
 
 typedef struct hdc2080 {
 	i2c_master_dev_handle_t dev_handle;
@@ -174,40 +178,49 @@ hdc2080_init( i2c_master_bus_handle_t *bus, int addr, hdc2080_t *sensor )
 	}
 }
 
-void
+esp_err_t
 hdc2080_read_regs( hdc2080_t *dev, int addr, int len, uint8_t *buffer )
 {
 	uint8_t wbuf = addr;
 	esp_err_t rc = i2c_master_transmit_receive(dev->dev_handle, &wbuf, 1, buffer, len, pdMS_TO_TICKS(500));
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "hdc2080_read_regs: %s", esp_err_to_name(rc));
-	}
+	if (rc != ESP_OK)
+		ESP_LOGE(LOGTAG, "hdc2080_read_regs %02x[%d]: %s", addr, len, esp_err_to_name(rc));
+	return rc;
 }
 
-void
+esp_err_t
 hdc2080_write_reg( hdc2080_t *dev, int addr, uint8_t value )
 {
 	uint8_t wbuf[2];
 	wbuf[0] = addr;
 	wbuf[1] = value;
 	esp_err_t rc = i2c_master_transmit(dev->dev_handle, wbuf, 2, pdMS_TO_TICKS(500));
-	if (rc != ESP_OK) {
-		ESP_LOGE(LOGTAG, "hdc2080_write_reg: %s", esp_err_to_name(rc));
-	}
+	if (rc != ESP_OK)
+		ESP_LOGE(LOGTAG, "hdc2080_write_reg %02x=%02x: %s", addr, value, esp_err_to_name(rc));
+	return rc;
 }
 
 void
-hdc2080_check( hdc2080_t *dev )
+hdc2080_check( hdc2080_t *dev, bool heat )
 {
 	uint8_t buf[8];
-	hdc2080_read_regs(dev, 0xfc, 4, buf);
-	ESP_LOGI(LOGTAG, "HDC2080: 0xfc ID: %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3]);
-	hdc2080_write_reg(dev, 0x0f, 0x01);
+	esp_err_t rc;
+	if (hdc2080_read_regs(dev, 0xfc, 4, buf) == ESP_OK)
+		ESP_LOGI(LOGTAG, "HDC2080: 0xfc ID: %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3]);
+	hdc2080_write_reg(dev, 0x0e, heat ? 0x08 : 0x80);
+	vTaskDelay(pdMS_TO_TICKS(100));
+	//while ((rc = hdc2080_read_regs(dev, 0x0e, 1, buf)) != ESP_OK) {
+		//vTaskDelay(pdMS_TO_TICKS(100));
+	//}
+	//ESP_LOGI(LOGTAG, "HDC2080: 0e=%02x", buf[0]);
+	while ((rc = hdc2080_write_reg(dev, 0x0f, 0x01)) != ESP_OK) {
+		vTaskDelay(pdMS_TO_TICKS(100));
+	}
 	vTaskDelay(pdMS_TO_TICKS(10));
 	hdc2080_read_regs(dev, 0x00, 4, buf);
 	double temp = ((int)buf[1] << 8 | buf[0]) * 165. / 65536. - 40.5;
 	double rh = ((int)buf[3] << 8 | buf[2]) * 100. / 65536.;
-	ESP_LOGI(LOGTAG, "HDC2080: %02x %02x %02x %02x T %f RH %f",
+	ESP_LOGI(LOGTAG, "HDC2080: %02x %02x %02x %02x T %.2f RH %.2f",
 			buf[0], buf[1], buf[2], buf[3], temp, rh);
 }
 
@@ -215,6 +228,18 @@ void app_main(void)
 {
 	int last_heap = 0;
 	ESP_LOGI(LOGTAG, "Hi there");
+
+	gpio_config_t io_conf;
+
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = BIT64(3);
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 1;
+	esp_err_t rc = gpio_config(&io_conf);
+	if (rc != ESP_OK)
+		ESP_LOGE(LOGTAG, "Configure button pin: %s", esp_err_to_name(rc));
+
 #ifdef ENABLE_DOW
 	dow_bus_t bus;
 	dowBusInit(&bus, GPIO_NUM_6, -1);
@@ -222,8 +247,10 @@ void app_main(void)
 	initialize_i2c(4, 5);
 	hdc2080_t hdc;
 	hdc2080_init(&bus_handle, 0x41, &hdc);
+#ifdef ENABLE_SI7021
 	si7021_t si;
 	si7021_init(&bus_handle, 0x40, &si);
+#endif /*ENABLE_SI7021*/
 
 #ifdef ENABLE_SHT40
 	sht40_init(&bus_handle, 0x44, &sensor1);
@@ -233,12 +260,17 @@ void app_main(void)
 #endif
 	for (; ; ) {
 		ESP_LOGI(LOGTAG, "Loop");
-		hdc2080_check(&hdc);
+        int x = gpio_get_level(3);
+		ESP_LOGI(LOGTAG, "Button %d", x);
+
+		hdc2080_check(&hdc, x == 0 ? true : false);
+#ifdef ENABLE_SI7021
 		si7021_check(&si);
+#endif /*ENABLE_SI7021*/
 #ifdef ENABLE_SHT40
 		float temp, rh;
 		if (sht40_convert(&sensor1, &temp, &rh)) {
-			ESP_LOGI(LOGTAG, "Temp %f RH %f", (double)temp, (double)rh);
+			ESP_LOGI(LOGTAG, "SHT40   %s T %.2f RH %.2f", id_string, (double)temp, (double)rh);
 		}
 #endif
 #ifdef ENABLE_DOW
@@ -253,7 +285,7 @@ void app_main(void)
 			ds1820ConvertAndWait(&bus, &rom);
 			float temp;
 			if (ds1820ReadTemp(&bus, &rom, &temp))
-				ESP_LOGI(LOGTAG, "ROM %s Temperature %.1f C %.1f F", q, (double)temp, (double)temp * 1.8 + 32);
+				ESP_LOGI(LOGTAG, "ROM %s T %.2f C %.2f F", q, (double)temp, (double)temp * 1.8 + 32);
 			else
 				ESP_LOGI(LOGTAG, "ROM %s Temperature read failed", q);
 		}
