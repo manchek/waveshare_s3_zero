@@ -1,12 +1,17 @@
 
+#include <esp_log.h>
 #include <esp_event.h>
 #include <esp_http_server.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <string.h>
 
 #include "Network.h"
+
+static const char *LOGTAG __attribute__((unused)) = "NET";
 
 static esp_netif_t *soft_ap = NULL;
 
@@ -58,12 +63,38 @@ networkInit()
 	return ESP_OK;
 }
 
+static const char *page1 =
+"<html>"
+"<head>"
+"</head>"
+"<body>"
+"Well ok then"
+"</body>"
+"</html>";
+
+esp_err_t
+my_uri_handler( httpd_req_t *req )
+{
+	httpd_resp_send(req, page1, HTTPD_RESP_USE_STRLEN);
+	return ESP_OK;
+}
+
+static const httpd_uri_t my_uri = {
+	.uri      = "/",
+	.method   = HTTP_GET,
+	.handler  = my_uri_handler,
+	.user_ctx = "xxx"
+};
+
 esp_err_t
 networkStartHttpd()
 {
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-	httpd_handle_t handle = NULL;
-	httpd_start(&handle, &config);
+	httpd_handle_t server = NULL;
+	config.uri_match_fn = httpd_uri_match_wildcard;
+	ESP_LOGI(LOGTAG, "max_uri_handlers = %d", config.max_uri_handlers);
+	ESP_ERROR_CHECK(httpd_start(&server, &config));
+	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &my_uri));
 	return ESP_OK;
 }
 
