@@ -1,10 +1,14 @@
 idf_component_register(
 	SRCS
 		"waveshare.c"
+		"Network.c"
 	INCLUDE_DIRS
 		"."
 	REQUIRES
 		"libdow"
 		"sht40"
+		"esp_http_server"
 		"esp_timer"
+		"esp_wifi"
+		"nvs_flash"
 )

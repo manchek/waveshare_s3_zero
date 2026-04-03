@@ -6,9 +6,11 @@
 #include <driver/i2c_master.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nvs_flash.h>
 
 #include "libdow.h"
 #include "sht40.h"
+#include "Network.h"
 
 #define ENABLE_DOW
 #define ENABLE_SHT40
@@ -229,6 +231,13 @@ void app_main(void)
 	int last_heap = 0;
 	ESP_LOGI(LOGTAG, "Hi there");
 
+	esp_err_t err = nvs_flash_init();   //initialize flash for later use
+	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		err = nvs_flash_init();
+	}
+	ESP_ERROR_CHECK(err);
+
 	gpio_config_t io_conf;
 
 	io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -239,6 +248,9 @@ void app_main(void)
 	esp_err_t rc = gpio_config(&io_conf);
 	if (rc != ESP_OK)
 		ESP_LOGE(LOGTAG, "Configure button pin: %s", esp_err_to_name(rc));
+
+	networkInit();
+	networkStartHttpd();
 
 #ifdef ENABLE_DOW
 	dow_bus_t bus;
